@@ -1,0 +1,234 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r}
+library(tidyverse); packageVersion("tidyverse")
+library(readxl); packageVersion("readxl")
+library(vegan); packageVersion("vegan")
+library(phyloseq); packageVersion("phyloseq")
+library(pairwiseAdonis); packageVersion("pairwiseAdonis")
+library(funfuns); packageVersion("funfuns")
+library(patchwork); packageVersion("patchwork")
+
+set.seed(1987)
+
+```
+
+```{r}
+# would run this in a dedicated R project with its own library
+# restore() restores packages from the lockfile are compared against packages currently installed in the library paths specified by library
+# renv::restore()
+
+# snapshot() to create a lockfile capturing the state of a project's R package dependencies. If you add pacakges, it will include them in the lock file
+# renv::snapshot(prompt = FALSE)
+
+```
+
+
+##Intraepithelial Beta Diversity Analysis:
+
+```{r}
+data <- read_excel("NG10_FC_gated_counts.xlsx")
+data$WeeksOnAbx <- paste0(data$WeeksOnAbx, 'wks')
+data$set_old <- paste(data$Tissue, data$Treatment, data$WeeksOnAbx, sep = '_')
+data$SampleID <- paste(data$set_old, data$AnimalID, sep = '_')
+data$Treatment_WeeksOnAbx <- paste(data$Treatment, data$WeeksOnAbx, sep = '_')
+data$Treatment_Tissue <- paste(data$Treatment, data$Tissue, sep = '_')
+data$Tissue_WeeksOnAbx <- paste(data$Tissue, data$WeeksOnAbx, sep = '_')
+
+data <- data %>% 
+  rename(Abx = Treatment) %>% 
+  rename(Tissue_long = Tissue) %>% 
+  mutate(Tissue = ifelse(Tissue_long %in% c("Cecum"), "Ce",
+                  ifelse(Tissue_long %in% c("Ileum"), "Il",
+                  ifelse(Tissue_long %in% c("Jejunum"), "Je", NA)))) %>% 
+  mutate(DaysOnAbx = ifelse(WeeksOnAbx %in% c("2wks"), "14d",
+                     ifelse(WeeksOnAbx %in% c("4wks"), "28d", NA)))
+  
+
+tcell_meta <- data %>% 
+  select(-starts_with("CD3")) %>%
+  column_to_rownames(var = "SampleID")
+
+# create a dataframe of  the 9 T cell subsets
+tcell_9 <- data %>% 
+  select(48:52, 54:57)
+
+# create a dataframe of  the 36 T cell subsets
+# 59 is sampleid if needed
+tcell_36 <- data %>% 
+  select(10:45)
+
+tcell_36_relative <- (tcell_36 / rowSums(tcell_36))
+
+```
+
+Adonis global test:
+
+```{r}
+tcell_36_adonis <- adonis(tcell_36_relative ~ (Tissue * DaysOnAbx * Abx), data = tcell_meta)
+tcell_36_adonis_df <- as_tibble(tcell_36_adonis$aov.tab, rownames = "terms")
+
+tcell_36_adonis
+
+```
+
+
+```{r}
+tcell_R2_plot <- tcell_36_adonis_df %>% 
+  filter(terms %in% c("Tissue", "DaysOnAbx", "Abx")) %>% 
+  ggplot(aes(x = R2, y = terms)) +
+  geom_bar(stat="identity") +
+  xlab("R2") +
+  ylab("") +
+  scale_x_continuous(limits = c(0,1), expand = c(0.0, 0.0)) + 
+  theme_classic(base_size = 11) 
+
+tcell_R2_plot
+
+```
+
+
+
+
+
+Pairwise comparisons:
+
+```{r}
+tcell_meta <- tcell_meta %>% 
+    unite(set, Tissue, Abx, DaysOnAbx, remove = FALSE)
+
+tcell_36_pwadon <- pairwiseAdonis::pairwise.adonis(tcell_36_relative, tcell_meta$set, p.adjust.m = 'none')
+
+tcell_36_pwadon_subset <- tcell_36_pwadon %>% 
+  separate(pairs, into = c ("comp1", "comp2"), sep = " vs ", remove = FALSE) %>% 
+  separate(comp1, into = c("tissue1", "abx1", "time1"), sep = "_", remove = FALSE) %>% 
+  separate(comp2, into = c("tissue2", "abx2", "time2"), sep = "_", remove = FALSE) %>% 
+  filter(  ((tissue1 == tissue2) & (abx1 == abx2)) |  ((tissue1 == tissue2) & (time1 == time2)) | ((time1 == time2) & (abx1 == abx2)) ) %>% 
+  arrange(pairs) %>% 
+  select(pairs, tissue1, tissue2, SumsOfSqs, F.Model, R2, p.value)
+
+tcell_36_pwadon_subset$p.adjusted <- p.adjust(tcell_36_pwadon_subset$p.value, method = 'fdr')
+
+tcell_36_pwadon_subset
+
+```
+
+```{r}
+tcell_36_pwadon_subset %>% 
+  filter(p.adjusted < 0.05) %>% 
+  filter(tissue1 == tissue2)
+
+```
+NMDS Plot:
+```{r}
+tcell_nmds <- ggplot()
+
+
+```
+
+
+
+
+
+
+##Microbiome Beta Diversity Analysis:
+
+```{r}
+micro <- read_tsv("ASVs_w_metadata.tsv") 
+
+asv_meta <- micro %>% 
+  select(-starts_with("ASV")) %>% 
+  mutate(DaysOnAbx = as.character(DaysOnAbx))
+
+asv <- micro %>% 
+  select(starts_with("ASV"))
+
+# samples are rows
+asv_relative <- (asv / rowSums(asv))
+
+```
+
+Adonis global test:
+
+```{r}
+asv_adonis <- adonis(asv_relative ~ (Tissue * DaysOnAbx * Abx), data = asv_meta)
+asv_adonis_df <- as_tibble(asv_adonis$aov.tab, rownames = "terms")
+
+asv_adonis
+
+
+```
+
+```{r}
+asv_R2_plot <- asv_adonis_df %>% 
+  filter(terms %in% c("Tissue", "DaysOnAbx", "Abx")) %>% 
+  ggplot(aes(x = R2, y = terms)) +
+  geom_bar(stat="identity") +
+  xlab("R2") +
+  ylab("") +
+  scale_x_continuous(limits = c(0,1), expand = c(0.0, 0.0)) + 
+  theme_classic(base_size = 11) 
+
+asv_R2_plot
+
+```
+
+
+Pairwise comparisons:
+
+```{r}
+asv_meta <- asv_meta %>% 
+    unite(set, Tissue, Abx, DaysOnAbx, remove = FALSE)
+
+asv_pwadon <- pairwiseAdonis::pairwise.adonis(asv_relative, asv_meta$set, p.adjust.m = 'none')
+
+asv_pwadon_subset <- asv_pwadon %>% 
+  separate(pairs, into = c ("comp1", "comp2"), sep = " vs ", remove = FALSE) %>% 
+  separate(comp1, into = c("tissue1", "abx1", "time1"), sep = "_", remove = FALSE) %>% 
+  separate(comp2, into = c("tissue2", "abx2", "time2"), sep = "_", remove = FALSE) %>% 
+  filter(  ((tissue1 == tissue2) & (abx1 == abx2)) |  ((tissue1 == tissue2) & (time1 == time2)) | ((time1 == time2) & (abx1 == abx2)) ) %>% 
+  arrange(pairs) %>% 
+  select(pairs, tissue1, tissue2, SumsOfSqs, F.Model, R2, p.value)
+
+asv_pwadon_subset$p.adjusted <- p.adjust(asv_pwadon_subset$p.value, method = 'fdr')
+
+asv_pwadon_subset
+
+```
+```{r}
+asv_pwadon_subset %>% 
+  filter(p.adjusted < 0.05) %>% 
+  filter(tissue1 == tissue2)
+
+```
+
+NMDS Plot:
+
+```{r}
+asv_nmds <- ggplot()
+
+```
+
+
+Combine plots into figure:
+
+```{r}
+# patchwork: https://patchwork.data-imaginist.com
+
+# need to change size of plot, etc
+# ggsave to output figure
+
+tcell_R2_plot + asv_R2_plot + tcell_nmds + asv_nmds + 
+  plot_layout(ncol = 2) +
+  plot_annotation(tag_levels = 'A',) & 
+  theme(plot.tag = element_text(size = 12))
+
+
+```
+
+
+
+
